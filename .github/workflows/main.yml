@@ -1,0 +1,49 @@
+name: AI Agent Bridge
+
+on:
+  workflow_dispatch:
+    inputs:
+      agent:
+        description: "Agente que solicitou a escrita"
+        required: true
+        type: choice
+        options:
+          - GPT
+          - Claude
+          - Grok
+          - Gemini
+      message:
+        description: "Mensagem ou atualização do agente"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  write-bridge:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Registrar comunicação
+        run: |
+          mkdir -p .ai
+          
+          {
+            echo ""
+            echo "## $(date -u '+%Y-%m-%d %H:%M:%S UTC') — ${{ inputs.agent }}"
+            echo ""
+            echo "${{ inputs.message }}"
+            echo ""
+          } >> .ai/AGENT-MESSAGES.md
+
+      - name: Commit
+        run: |
+          git config user.name "AI Agent Bridge"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .ai/AGENT-MESSAGES.md
+          git diff --cached --quiet || git commit -m "Bridge: ${{ inputs.agent }} communication"
+          git push
