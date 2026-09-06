@@ -3,8 +3,8 @@ name: AI Agent Bridge
 on:
   workflow_dispatch:
     inputs:
-      agent:
-        description: "Agente que solicitou a escrita"
+      from_agent:
+        description: "Agente que envia (FROM)"
         required: true
         type: choice
         options:
@@ -12,13 +12,54 @@ on:
           - Claude
           - Grok
           - Gemini
+      to_agent:
+        description: "Agente destinatário (TO)"
+        required: true
+        type: choice
+        options:
+          - GPT
+          - Claude
+          - Grok
+          - Gemini
+          - ALL
+      type:
+        description: "Tipo da comunicação (TYPE)"
+        required: true
+        type: choice
+        options:
+          - TASK
+          - RESULT
+          - REVIEW
+          - QUESTION
+          - DECISION
+          - HANDOFF
+          - INFO
+      status:
+        description: "Estado da comunicação (STATUS)"
+        required: true
+        type: choice
+        options:
+          - PENDING
+          - IN_PROGRESS
+          - COMPLETED
+          - BLOCKED
+          - FAILED
+      task:
+        description: "Tarefa relacionada, quando aplicável (TASK)"
+        required: false
+        type: string
+        default: ""
       message:
-        description: "Mensagem ou atualização do agente"
+        description: "Conteúdo da comunicação (MESSAGE)"
         required: true
         type: string
 
 permissions:
   contents: write
+
+concurrency:
+  group: agent-messages-bridge
+  cancel-in-progress: false
 
 jobs:
   write-bridge:
@@ -28,22 +69,78 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Registrar comunicação
+      - name: Validar entrada
+        env:
+          FROM_AGENT: ${{ inputs.from_agent }}
+          TO_AGENT: ${{ inputs.to_agent }}
+          MSG_TYPE: ${{ inputs.type }}
+          MSG_STATUS: ${{ inputs.status }}
+          MSG_BODY: ${{ inputs.message }}
         run: |
+          set -euo pipefail
+
+          MAX_MESSAGE_LENGTH=4000
+
+          if [ -z "${FROM_AGENT:-}" ] || [ -z "${TO_AGENT:-}" ] || [ -z "${MSG_TYPE:-}" ] || [ -z "${MSG_STATUS:-}" ]; then
+            echo "::error::Campos obrigatórios ausentes (from_agent, to_agent, type, status)."
+            exit 1
+          fi
+
+          if [ -z "${MSG_BODY:-}" ] || [ -z "$(printf '%s' "$MSG_BODY" | tr -d '[:space:]')" ]; then
+            echo "::error::O campo message não pode ser vazio ou conter apenas espaços."
+            exit 1
+          fi
+
+          MSG_LENGTH=$(printf '%s' "$MSG_BODY" | wc -c)
+          if [ "$MSG_LENGTH" -gt "$MAX_MESSAGE_LENGTH" ]; then
+            echo "::error::message excede o limite de $MAX_MESSAGE_LENGTH caracteres (atual: $MSG_LENGTH)."
+            exit 1
+          fi
+
+      - name: Registrar comunicação
+        env:
+          FROM_AGENT: ${{ inputs.from_agent }}
+          TO_AGENT: ${{ inputs.to_agent }}
+          MSG_TYPE: ${{ inputs.type }}
+          MSG_STATUS: ${{ inputs.status }}
+          MSG_TASK: ${{ inputs.task }}
+          MSG_BODY: ${{ inputs.message }}
+        run: |
+          set -euo pipefail
+
           mkdir -p .ai
-          
+          touch .ai/AGENT-MESSAGES.md
+
+          TIMESTAMP="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+
           {
-            echo ""
-            echo "## $(date -u '+%Y-%m-%d %H:%M:%S UTC') — ${{ inputs.agent }}"
-            echo ""
-            echo "${{ inputs.message }}"
-            echo ""
+            printf '\n'
+            printf '### %s — %s\n\n' "$TIMESTAMP" "$FROM_AGENT"
+            printf '**FROM:** %s  \n' "$FROM_AGENT"
+            printf '**TO:** %s  \n' "$TO_AGENT"
+            printf '**TYPE:** %s  \n' "$MSG_TYPE"
+            printf '**STATUS:** %s  \n' "$MSG_STATUS"
+            if [ -n "$MSG_TASK" ]; then
+              printf '**TASK:** %s  \n' "$MSG_TASK"
+            fi
+            printf '\n**MESSAGE:**  \n'
+            printf '%s\n' "$MSG_BODY"
           } >> .ai/AGENT-MESSAGES.md
 
       - name: Commit
+        env:
+          FROM_AGENT: ${{ inputs.from_agent }}
+          TO_AGENT: ${{ inputs.to_agent }}
+          MSG_TYPE: ${{ inputs.type }}
         run: |
+          set -euo pipefail
           git config user.name "AI Agent Bridge"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .ai/AGENT-MESSAGES.md
-          git diff --cached --quiet || git commit -m "Bridge: ${{ inputs.agent }} communication"
-          git push
+          COMMIT_MSG="Bridge: ${FROM_AGENT} -> ${TO_AGENT} (${MSG_TYPE})"
+          git diff --cached --quiet || git commit -m "$COMMIT_MSG"
+
+      - name: Push
+        run: |
+          set -euo pipefail
+          git push origin HEAD:main
